@@ -296,8 +296,13 @@ function App() {
 
   // Monthly OA (Combined) - Estimate 23% of income (capped at $8000 base -> $1840/pax max?)
   // Actually max OA contribution is based on Ordinary Wage ceiling ($8000 from 2026? $6800 in 2024? let's use user input for precision)
-  // Let's init with 0 and maybe effect to update it based on buyers
   const [monthlyOA, setMonthlyOA] = useState(0)
+
+  // Buying Plan State
+  const [targetPrice, setTargetPrice] = useState(1000000)
+  const [targetCash, setTargetCash] = useState(250000)
+  const [targetCPF1, setTargetCPF1] = useState(100000)
+  const [targetCPF2, setTargetCPF2] = useState(50000)
 
   // Auto-update OA estimate
   const calculateOA = (p1: BuyerProfileData, p2: BuyerProfileData) => {
@@ -374,6 +379,35 @@ function App() {
     const loan1 = Math.min(maxLoan1, msrLimit1)
     const loan2 = Math.min(maxLoan2, msrLimit2)
     eligibleLoan = Math.max(loan1, loan2)
+  }
+
+  // Buying Plan Calculations
+  const targetBSD = calculateBSD(targetPrice)
+  const targetBuyerAgentFee = propertyType === 'HDB' ? targetPrice * 0.01 * 1.09 : 0
+  const targetLegal = 3000
+  // Note: Option/Exercise fees are part of the price essentially, usually paid in cash first.
+  // We focus on the "Loan Required" math here: Price - Cash - CPF.
+
+  const targetLoanRequired = Math.max(0, targetPrice - targetCash - targetCPF1 - targetCPF2)
+
+  // Validation
+  let targetLTVLimit = 0.75
+  if (propertyType === 'HDB' && loanType === 'HDB') targetLTVLimit = 0.80
+  const maxLTVLoanAmount = targetPrice * targetLTVLimit
+
+  const isLTVExceeded = targetLoanRequired > maxLTVLoanAmount
+  const isAffordabilityExceeded = targetLoanRequired > eligibleLoan
+
+  const targetMonthlyInstalment = calculateMonthlyInstalment(targetLoanRequired, loanTenure, interestRate / 100)
+  const targetCashTopUp = Math.max(0, targetMonthlyInstalment - monthlyOA)
+
+  // Runway for Target Plan
+  // Available CPF for runway = (Total Available CPFs from sale) - (CPF used in plan)
+  // Assuming inputs targetCPF1/2 are what they intended to use from their funds.
+  const targetRemainingCPF = Math.max(0, (totalCpf1 + totalCpf2) - (targetCPF1 + targetCPF2))
+  let targetRunway = 999
+  if (targetCashTopUp > 0) {
+    targetRunway = targetRemainingCPF / (targetCashTopUp * 12)
   }
 
   // Purchase prices from $300k to $4M
@@ -636,6 +670,81 @@ function App() {
             <div className="flex justify-between items-center">
               <span className="font-medium text-gray-900">Combined Eligible Loan Amount</span>
               <span className="text-xl font-bold text-green-600">{formatCurrency(eligibleLoan)}</span>
+            </div>
+          </div>
+        </Section>
+
+        {/* Buying Plan Calculator */}
+        <Section title="Buying Plan Calculator">
+          <div className="grid md:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <h3 className="font-medium text-gray-900 border-b pb-2">Plan Inputs</h3>
+              <CurrencyInput label="Target Purchase Price" value={targetPrice} onChange={setTargetPrice} highlight />
+              <CurrencyInput label="Cash Downpayment" value={targetCash} onChange={setTargetCash} highlight />
+              <CurrencyInput label="CPF Usage (Buyer 1)" value={targetCPF1} onChange={setTargetCPF1} highlight />
+              <CurrencyInput label="CPF Usage (Buyer 2)" value={targetCPF2} onChange={setTargetCPF2} highlight />
+
+              <div className="mt-4 pt-4 border-t text-sm text-gray-600">
+                <div className="flex justify-between mb-1">
+                  <span>Est. Fees (BSD + Legal + Agent)</span>
+                  <span>{formatCurrency(targetBSD + targetLegal + targetBuyerAgentFee)}</span>
+                </div>
+                <div className="flex justify-between font-medium text-gray-800">
+                  <span>Total Initial Cost (Price + Fees)</span>
+                  <span>{formatCurrency(targetPrice + targetBSD + targetLegal + targetBuyerAgentFee)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className={`rounded-xl p-6 ${isLTVExceeded || isAffordabilityExceeded ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+              <h3 className="font-medium text-gray-900 border-b pb-2 mb-4">Loan Details</h3>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-700">Loan Required (a)</span>
+                  <span className="text-2xl font-bold text-gray-900">{formatCurrency(targetLoanRequired)}</span>
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span>LTV Limit ({targetLTVLimit * 100}%)</span>
+                    <span className={isLTVExceeded ? 'text-red-600 font-bold' : 'text-green-700'}>
+                      {isLTVExceeded ? 'Exceeded' : 'Pass'} ({formatCurrency(maxLTVLoanAmount)})
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Max Eligible Loan (Inc. MSR/TDSR)</span>
+                    <span className={isAffordabilityExceeded ? 'text-red-600 font-bold' : 'text-green-700'}>
+                      {isAffordabilityExceeded ? 'Exceeded' : 'Pass'} ({formatCurrency(eligibleLoan)})
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-gray-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-medium text-gray-900">Monthly Installment</span>
+                    <span className="text-xl font-bold text-blue-600">{formatCurrency(targetMonthlyInstalment)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Combined Monthly OA</span>
+                    <span>-{formatCurrency(monthlyOA)}</span>
+                  </div>
+                  <div className="flex justify-between font-medium">
+                    <span>Cash Top-up Required</span>
+                    <span className={targetCashTopUp > 0 ? 'text-red-600' : 'text-gray-500'}>
+                      {targetCashTopUp > 0 ? formatCurrency(targetCashTopUp) : '$0'}
+                    </span>
+                  </div>
+                  {targetCashTopUp > 0 && (
+                    <div className="mt-2 text-right text-sm">
+                      <span className="text-gray-600 mr-2">CPF Runway:</span>
+                      <span className={targetRunway < 5 ? 'text-red-600 font-bold' : 'text-green-600'}>
+                        {targetRunway > 50 ? '> 50 years' : `${targetRunway.toFixed(1)} years`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </Section>
