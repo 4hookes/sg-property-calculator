@@ -296,7 +296,12 @@ function App() {
 
   // Calculations
   const cashFromSale = sellingPrice - outstandingLoan - (cpfUsed1 + accruedInterest1) - (cpfUsed2 + accruedInterest2) - legalFees
-  const totalAvailable = cashFromSale + cashSavings + currentCpf1 + currentCpf2
+
+  // Total Available should include the CPF returned from sale
+  const totalCpf1 = currentCpf1 + cpfUsed1 + accruedInterest1
+  const totalCpf2 = currentCpf2 + cpfUsed2 + accruedInterest2
+
+  const totalAvailable = cashFromSale + cashSavings + totalCpf1 + totalCpf2
 
   // Calculate max eligible loan (use the higher earner's max loan)
   const currentYear = new Date().getFullYear()
@@ -526,8 +531,8 @@ function App() {
               <h3 className="font-medium text-gray-900 mb-3">Total Available Funds</h3>
               <DisplayRow label="Cash from Sale" value={formatCurrency(cashFromSale)} />
               <DisplayRow label="Cash from Savings" value={formatCurrency(cashSavings)} />
-              <DisplayRow label="CPF (Buyer 1)" value={formatCurrency(currentCpf1)} />
-              <DisplayRow label="CPF (Buyer 2)" value={formatCurrency(currentCpf2)} />
+              <DisplayRow label="CPF (Buyer 1) w/ Refund" value={formatCurrency(totalCpf1)} />
+              <DisplayRow label="CPF (Buyer 2) w/ Refund" value={formatCurrency(totalCpf2)} />
               <div className="border-t border-blue-200 mt-2 pt-2">
                 <DisplayRow label="Total Available" value={formatCurrency(totalAvailable)} bold />
               </div>
