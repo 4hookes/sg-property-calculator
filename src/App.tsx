@@ -14,6 +14,15 @@ const parseCurrency = (value: string): number => {
   return Number(value.replace(/[^0-9.-]/g, '')) || 0
 }
 
+// Calculate Max Loan based on MSR (30%)
+const calculateMaxLoanMSR = (monthlyIncome: number, tenureYears: number, rate: number = 0.026): number => {
+  const msrLimit = monthlyIncome * 0.30
+  const monthlyRate = rate / 12
+  const months = tenureYears * 12
+  if (msrLimit <= 0 || months <= 0) return 0
+  return msrLimit * ((1 - Math.pow(1 + monthlyRate, -months)) / monthlyRate)
+}
+
 // Calculate BSD based on purchase price
 const calculateBSD = (price: number): number => {
   if (price <= 180000) return price * 0.01
@@ -58,9 +67,8 @@ const CurrencyInput = ({
       type="text"
       value={formatCurrency(value)}
       onChange={(e) => onChange(parseCurrency(e.target.value))}
-      className={`w-40 px-3 py-2 text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-        highlight ? 'bg-yellow-50 border-yellow-300' : 'border-gray-300'
-      }`}
+      className={`w-40 px-3 py-2 text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${highlight ? 'bg-yellow-50 border-yellow-300' : 'border-gray-300'
+        }`}
     />
   </div>
 )
@@ -240,6 +248,11 @@ interface BuyerProfileData {
 }
 
 function App() {
+  // Property Type State
+  const [propertyType, setPropertyType] = useState<'Private' | 'HDB'>('Private')
+  const [loanType, setLoanType] = useState<'HDB' | 'Bank'>('Bank')
+  const [grants, setGrants] = useState(0)
+
   // Selling section state
   const [sellingPrice, setSellingPrice] = useState(2400000)
   const [outstandingLoan, setOutstandingLoan] = useState(600000)
@@ -279,6 +292,8 @@ function App() {
   const [interestRate, setInterestRate] = useState(2.0)
   const [loanTenure, setLoanTenure] = useState(30)
 
+
+
   // Calculations
   const cashFromSale = sellingPrice - outstandingLoan - (cpfUsed1 + accruedInterest1) - (cpfUsed2 + accruedInterest2) - legalFees
   const totalAvailable = cashFromSale + cashSavings + currentCpf1 + currentCpf2
@@ -302,18 +317,36 @@ function App() {
   const usableTDSR1 = Math.max(0, tdsr1 - buyer1.currentLoan)
   const usableTDSR2 = Math.max(0, tdsr2 - buyer2.currentLoan)
 
-  const maxLoan1 = calculateMaxLoan(usableTDSR1, tenure1)
-  const maxLoan2 = calculateMaxLoan(usableTDSR2, tenure2)
-  const eligibleLoan = Math.max(maxLoan1, maxLoan2)
+  const maxLoan1 = calculateMaxLoan(usableTDSR1, tenure1, interestRate / 100)
+  const maxLoan2 = calculateMaxLoan(usableTDSR2, tenure2, interestRate / 100)
 
-  // Purchase prices from $700k to $4M
+  // For HDB, also check MSR (30%)
+  // HDB MSR is based on Gross Monthly Income, not Adjusted/TDSR income usually?
+  // Simplification: Use adjusted income for now or exact monthly income
+  // MSR applies to HDB and EC. Limit is 30% of gross monthly income.
+  const msrLimit1 = calculateMaxLoanMSR(buyer1.monthlyIncome, tenure1, interestRate / 100)
+  const msrLimit2 = calculateMaxLoanMSR(buyer2.monthlyIncome, tenure2, interestRate / 100)
+
+  let eligibleLoan = Math.max(maxLoan1, maxLoan2)
+
+  if (propertyType === 'HDB') {
+    // If HDB, take min of TDSR-based loan and MSR-based loan
+    const loan1 = Math.min(maxLoan1, msrLimit1)
+    const loan2 = Math.min(maxLoan2, msrLimit2)
+    eligibleLoan = Math.max(loan1, loan2)
+  }
+
+  // Purchase prices from $300k to $4M
   const purchasePrices = useMemo(() => {
     const prices = []
-    for (let p = 700000; p <= 4000000; p += 100000) {
+    const start = propertyType === 'HDB' ? 300000 : 700000
+    const end = propertyType === 'HDB' ? 1500000 : 4000000
+    const step = propertyType === 'HDB' ? 50000 : 100000
+    for (let p = start; p <= end; p += step) {
       prices.push(p)
     }
     return prices
-  }, [])
+  }, [propertyType])
 
   // Calculate purchase details for each price
   const purchaseDetails = useMemo(() => {
@@ -323,11 +356,34 @@ function App() {
       const legal = 3000
       const bsd = calculateBSD(price)
       const absd = 0 // Assuming SC buying first property
-      const downpayment = price * 0.20
-      const upfrontRequired = optionFee + exerciseFee + legal + bsd + absd
-      const loan75 = price * 0.75
-      const loanShortfall = Math.max(0, loan75 - eligibleLoan)
-      const actualLoan = Math.min(loan75, eligibleLoan)
+
+      // LTV and Downpayment Logic
+      let ltv = 0.75
+
+      if (propertyType === 'HDB') {
+        if (loanType === 'HDB') {
+          ltv = 0.80
+        } else {
+          ltv = 0.75
+        }
+      }
+
+
+      const downpayment = price * (1 - ltv)
+
+      // Grants usually deducted from price for loan purchase, or treat as CPI funds?
+      // Simplification: Grant adds to available funds
+
+      const upfrontRequired = optionFee + exerciseFee + legal + bsd + absd + downpayment
+
+      // Calculate shortfall
+      // Max Loan is eligibleLoan.
+      // Actual Loan is min(LTV Limit, Eligible Loan)
+      const maxLTVLoan = price * ltv
+      const actualEligible = eligibleLoan
+      const actualLoan = Math.min(maxLTVLoan, actualEligible)
+
+      const loanShortfall = Math.max(0, maxLTVLoan - actualLoan)
       const monthlyInstalment = calculateMonthlyInstalment(actualLoan, loanTenure, interestRate / 100)
       const rentalYield = price * 0.03 / 12
 
@@ -347,17 +403,17 @@ function App() {
         absd,
         downpayment,
         upfrontRequired,
-        loan75,
+        loanLTV: maxLTVLoan,
         loanShortfall,
         additionalTDSR,
         pledge,
         showFund,
         monthlyInstalment,
         rentalYield,
-        canAfford: upfrontRequired <= totalAvailable && loanShortfall === 0,
+        canAfford: upfrontRequired <= (totalAvailable + grants) && loanShortfall === 0,
       }
     })
-  }, [purchasePrices, eligibleLoan, loanTenure, interestRate, totalAvailable])
+  }, [purchasePrices, eligibleLoan, loanTenure, interestRate, totalAvailable, propertyType, loanType, grants])
 
   return (
     <div className="min-h-screen bg-gray-100 py-8 px-4">
@@ -367,6 +423,66 @@ function App() {
         <div className="text-sm text-gray-500 mb-4 flex items-center gap-2">
           <span className="inline-block w-4 h-4 bg-yellow-50 border border-yellow-300 rounded"></span>
           <span>Yellow fields are inputs</span>
+        </div>
+
+        {/* Property Type Selection */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6 p-4">
+          <div className="flex flex-wrap gap-6 items-center">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Property Type</label>
+              <div className="flex rounded-lg border border-gray-300 overflow-hidden">
+                <button
+                  onClick={() => setPropertyType('Private')}
+                  className={`px-4 py-2 text-sm font-medium ${propertyType === 'Private' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                >
+                  Private
+                </button>
+                <button
+                  onClick={() => setPropertyType('HDB')}
+                  className={`px-4 py-2 text-sm font-medium ${propertyType === 'HDB' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                >
+                  HDB / EC
+                </button>
+              </div>
+            </div>
+
+            {propertyType === 'HDB' && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Loan Type</label>
+                  <div className="flex rounded-lg border border-gray-300 overflow-hidden">
+                    <button
+                      onClick={() => setLoanType('Bank')}
+                      className={`px-4 py-2 text-sm font-medium ${loanType === 'Bank' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      Bank Loan
+                    </button>
+                    <button
+                      onClick={() => {
+                        setLoanType('HDB')
+                        setInterestRate(2.6)
+                      }}
+                      className={`px-4 py-2 text-sm font-medium ${loanType === 'HDB' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                    >
+                      HDB Loan
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Est. Grants</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={formatCurrency(grants)}
+                      onChange={(e) => setGrants(parseCurrency(e.target.value))}
+                      className="w-32 px-3 py-2 text-right border border-yellow-300 bg-yellow-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Selling Section */}
@@ -443,8 +559,10 @@ function App() {
                 step="0.1"
                 value={interestRate}
                 onChange={(e) => setInterestRate(parseFloat(e.target.value) || 0)}
-                className="w-24 px-3 py-2 text-right border border-yellow-300 bg-yellow-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`w-24 px-3 py-2 text-right border border-yellow-300 bg-yellow-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 ${loanType === 'HDB' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={propertyType === 'HDB' && loanType === 'HDB'}
               />
+              {propertyType === 'HDB' && loanType === 'HDB' && <span className="text-xs text-gray-500">(Fixed for HDB Loan)</span>}
             </div>
             <div className="flex items-center gap-3">
               <label className="text-gray-700">Loan Tenure (Years)</label>
@@ -469,9 +587,10 @@ function App() {
                   <th className="px-3 py-2 text-right font-medium text-gray-700">4% Exercise</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Legal</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">BSD</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">20% Down</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">BSD</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">{propertyType === 'HDB' && loanType === 'HDB' ? '20%' : '25%'} Down</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Upfront Req.</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">75% Loan</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">{propertyType === 'HDB' && loanType === 'HDB' ? '80%' : '75%'} Loan</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Loan Shortfall</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Add. TDSR</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Pledge</th>
@@ -493,7 +612,7 @@ function App() {
                     <td className="px-3 py-2 text-right">{formatCurrency(detail.bsd)}</td>
                     <td className="px-3 py-2 text-right">{formatCurrency(detail.downpayment)}</td>
                     <td className="px-3 py-2 text-right font-medium">{formatCurrency(detail.upfrontRequired)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.loan75)}</td>
+                    <td className="px-3 py-2 text-right">{formatCurrency(detail.loanLTV)}</td>
                     <td className={`px-3 py-2 text-right ${detail.loanShortfall > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
                       {detail.loanShortfall > 0 ? formatCurrency(detail.loanShortfall) : '-'}
                     </td>
@@ -519,7 +638,7 @@ function App() {
               <span>Green rows = affordable based on your funds and loan eligibility</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="inline-block w-4 h-4 rounded" style={{backgroundColor: 'rgb(234 88 12 / 0.1)'}}></span>
+              <span className="inline-block w-4 h-4 rounded" style={{ backgroundColor: 'rgb(234 88 12 / 0.1)' }}></span>
               <span>Orange values = additional requirements when there's a loan shortfall</span>
             </div>
           </div>
