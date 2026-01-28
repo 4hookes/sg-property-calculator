@@ -248,6 +248,8 @@ interface BuyerProfileData {
 }
 
 function App() {
+  const currentYear = new Date().getFullYear()
+
   // Property Type State
   const [propertyType, setPropertyType] = useState<'Private' | 'HDB'>('Private')
   const [loanType, setLoanType] = useState<'HDB' | 'Bank'>('Bank')
@@ -260,7 +262,9 @@ function App() {
   const [accruedInterest1, setAccruedInterest1] = useState(12500)
   const [cpfUsed2, setCpfUsed2] = useState(250000)
   const [accruedInterest2, setAccruedInterest2] = useState(12500)
+
   const [legalFees, setLegalFees] = useState(3000)
+  const [sellingAgentFeeRate] = useState(2.0) // 2% default
 
   // Current CPF funds
   const [currentCpf1, setCurrentCpf1] = useState(80000)
@@ -288,6 +292,37 @@ function App() {
     currentLoan: 0,
   })
 
+
+
+  // Monthly OA (Combined) - Estimate 23% of income (capped at $8000 base -> $1840/pax max?)
+  // Actually max OA contribution is based on Ordinary Wage ceiling ($8000 from 2026? $6800 in 2024? let's use user input for precision)
+  // Let's init with 0 and maybe effect to update it based on buyers
+  const [monthlyOA, setMonthlyOA] = useState(0)
+
+  // Auto-update OA estimate
+  const calculateOA = (p1: BuyerProfileData, p2: BuyerProfileData) => {
+    const calc = (income: number, birthYear: number) => {
+      const age = new Date().getFullYear() - birthYear
+      const cappedIncome = Math.min(income, 8000)
+      let rate = 0.23
+      if (age > 35) rate = 0.21
+      if (age > 45) rate = 0.19
+      if (age > 50) rate = 0.15
+      return cappedIncome * rate
+    }
+    return calc(p1.monthlyIncome, p1.birthYear) + calc(p2.monthlyIncome, p2.birthYear)
+  }
+
+  const handleBuyer1Change = (newProfile: BuyerProfileData) => {
+    setBuyer1(newProfile)
+    setMonthlyOA(calculateOA(newProfile, buyer2))
+  }
+
+  const handleBuyer2Change = (newProfile: BuyerProfileData) => {
+    setBuyer2(newProfile)
+    setMonthlyOA(calculateOA(buyer1, newProfile))
+  }
+
   // Loan settings
   const [interestRate, setInterestRate] = useState(2.0)
   const [loanTenure, setLoanTenure] = useState(30)
@@ -295,7 +330,8 @@ function App() {
 
 
   // Calculations
-  const cashFromSale = sellingPrice - outstandingLoan - (cpfUsed1 + accruedInterest1) - (cpfUsed2 + accruedInterest2) - legalFees
+  const sellingAgentFee = sellingPrice * (sellingAgentFeeRate / 100) * 1.09 // 9% GST
+  const cashFromSale = sellingPrice - outstandingLoan - (cpfUsed1 + accruedInterest1) - (cpfUsed2 + accruedInterest2) - legalFees - sellingAgentFee
 
   // Total Available should include the CPF returned from sale
   const totalCpf1 = currentCpf1 + cpfUsed1 + accruedInterest1
@@ -304,7 +340,6 @@ function App() {
   const totalAvailable = cashFromSale + cashSavings + totalCpf1 + totalCpf2
 
   // Calculate max eligible loan (use the higher earner's max loan)
-  const currentYear = new Date().getFullYear()
   const age1 = buyer1.birthYear ? currentYear - buyer1.birthYear : 0
   const age2 = buyer2.birthYear ? currentYear - buyer2.birthYear : 0
   const tenure1 = Math.min(65 - age1, 35)
@@ -362,6 +397,9 @@ function App() {
       const bsd = calculateBSD(price)
       const absd = 0 // Assuming SC buying first property
 
+      // Buying Agent Fee (1% + GST for HDB, 0 for Private)
+      const buyerAgentFee = propertyType === 'HDB' ? price * 0.01 * 1.09 : 0
+
       // LTV and Downpayment Logic
       let ltv = 0.75
 
@@ -374,16 +412,35 @@ function App() {
       }
 
 
-      const downpayment = price * (1 - ltv)
+      const minDownpayment = price * (1 - ltv)
 
-      // Grants usually deducted from price for loan purchase, or treat as CPI funds?
-      // Simplification: Grant adds to available funds
+      // Breakdown Downpayment into Cash and CPF
+      // Private: Min 5% Cash. Bank Loan HDB: Min 5% Cash. HDB Loan: 0% Cash.
+      // PLUS: Agent Fee is usually CASH.
+      // PLUS: Option/Exercise is CASH first, but reimbursed? Or counts to 5%?
+      // Simplified "Cash Deposit Requirement":
+      //   Min Cash (5% or 0%) + Agent Fee + Any Shortfall (handled later)
+      //   Stamp Duties can be CPF. Legal can be CPF.
 
-      const upfrontRequired = optionFee + exerciseFee + legal + bsd + absd + downpayment
+      let minCashPercent = 0.05
+      if (propertyType === 'HDB' && loanType === 'HDB') minCashPercent = 0
+
+      const minCashDown = price * minCashPercent
+
+      // Actually, define "Cash Deposit" as what user ASKED: 
+      // "Cash deposit", "CPF deposit"
+      // Let's assume Cash Deposit = Min Cash Component + Agent Fee
+      // And CPF Deposit = Balance of Downpayment + BSD + ABSD + Legal
+      // (Assuming sufficient CPF. If not, overflow to Cash - but for "Plan" lets show required CPF)
+
+      const cashDeposit = minCashDown + buyerAgentFee
+      // CPF Deposit covers the rest of the 20/25% downpayment + Fees
+      const cpfDeposit = (minDownpayment - minCashDown) + bsd + absd + legal
+
+      // Total Upfront (Cash + CPF)
+      const upfrontRequired = cashDeposit + cpfDeposit
 
       // Calculate shortfall
-      // Max Loan is eligibleLoan.
-      // Actual Loan is min(LTV Limit, Eligible Loan)
       const maxLTVLoan = price * ltv
       const actualEligible = eligibleLoan
       const actualLoan = Math.min(maxLTVLoan, actualEligible)
@@ -391,6 +448,24 @@ function App() {
       const loanShortfall = Math.max(0, maxLTVLoan - actualLoan)
       const monthlyInstalment = calculateMonthlyInstalment(actualLoan, loanTenure, interestRate / 100)
       const rentalYield = price * 0.03 / 12
+
+      // Monthly Shortfall / Surplus
+      // Monthly Cash Top-up = Installment - OA
+      const cashTopUp = Math.max(0, monthlyInstalment - monthlyOA)
+
+      // Runway
+      // Remaining CPF = Total Available - CPF Deposit Used
+      // If we have shortfall, does it come from CPF? 
+      // User said: "If they have access to CPF after the sales, then we should be taking the $2,000 from their balance OA."
+      // So Runway is based on (Total Available - Upfront CPF) / TopUp
+      const remainingCPFBalance = Math.max(0, (totalCpf1 + totalCpf2) - cpfDeposit) // Simplified, assumes all CPF usage
+
+      let runwayYears = 0
+      if (cashTopUp > 0) {
+        runwayYears = remainingCPFBalance / (cashTopUp * 12)
+      } else {
+        runwayYears = 999 // Infinite
+      }
 
       // Additional calculations for shortfall scenarios
       const additionalTDSR = loanShortfall > 0
@@ -406,7 +481,10 @@ function App() {
         legal,
         bsd,
         absd,
-        downpayment,
+        buyerAgentFee,
+        cashDeposit,
+        cpfDeposit,
+        activeLTV: ltv,
         upfrontRequired,
         loanLTV: maxLTVLoan,
         loanShortfall,
@@ -415,10 +493,14 @@ function App() {
         showFund,
         monthlyInstalment,
         rentalYield,
+        monthlyOA,
+        cashTopUp,
+        runwayYears,
+        remainingCPFBalance,
         canAfford: upfrontRequired <= (totalAvailable + grants) && loanShortfall === 0,
       }
     })
-  }, [purchasePrices, eligibleLoan, loanTenure, interestRate, totalAvailable, propertyType, loanType, grants])
+  }, [purchasePrices, eligibleLoan, loanTenure, interestRate, totalAvailable, propertyType, loanType, grants, monthlyOA, totalCpf1, totalCpf2])
 
   return (
     <div className="min-h-screen bg-gray-100 py-8 px-4">
@@ -509,6 +591,10 @@ function App() {
               <DisplayRow label="Less: CPF Refund (Buyer 1)" value={`-${formatCurrency(cpfUsed1 + accruedInterest1)}`} />
               <DisplayRow label="Less: CPF Refund (Buyer 2)" value={`-${formatCurrency(cpfUsed2 + accruedInterest2)}`} />
               <DisplayRow label="Less: Legal Fees" value={`-${formatCurrency(legalFees)}`} />
+              <div className="flex items-center justify-between py-2">
+                <span className="text-gray-700">Less: Agent Fee (2% + GST)</span>
+                <span className="text-gray-900">-{formatCurrency(sellingAgentFee)}</span>
+              </div>
               <div className="border-t mt-2 pt-2">
                 <DisplayRow label="Cash from Sale" value={formatCurrency(cashFromSale)} bold />
               </div>
@@ -543,8 +629,8 @@ function App() {
         {/* Buyer Profiles */}
         <Section title="Buyer Profiles (TDSR at 55%)">
           <div className="flex flex-wrap gap-8">
-            <BuyerProfile buyerNum={1} profile={buyer1} onChange={setBuyer1} />
-            <BuyerProfile buyerNum={2} profile={buyer2} onChange={setBuyer2} />
+            <BuyerProfile buyerNum={1} profile={buyer1} onChange={handleBuyer1Change} />
+            <BuyerProfile buyerNum={2} profile={buyer2} onChange={handleBuyer2Change} />
           </div>
           <div className="mt-4 p-4 bg-green-50 rounded-lg">
             <div className="flex justify-between items-center">
@@ -578,6 +664,16 @@ function App() {
                 className="w-24 px-3 py-2 text-right border border-yellow-300 bg-yellow-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+
+            <div className="flex items-center gap-3 border-l pl-6 ml-6">
+              <label className="text-gray-700 font-medium">Combined Monthly OA</label>
+              <input
+                type="text"
+                value={formatCurrency(monthlyOA)}
+                onChange={(e) => setMonthlyOA(parseCurrency(e.target.value))}
+                className="w-32 px-3 py-2 text-right border border-yellow-300 bg-yellow-50 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
           </div>
         </Section>
 
@@ -588,20 +684,19 @@ function App() {
               <thead>
                 <tr className="bg-gray-50">
                   <th className="px-3 py-2 text-left font-medium text-gray-700 sticky left-0 bg-gray-50">Purchase Price</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">1% Option</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">4% Exercise</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Legal</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">BSD</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">BSD</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">{propertyType === 'HDB' && loanType === 'HDB' ? '20%' : '25%'} Down</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">Cash Deposit</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">CPF Deposit</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700">Stamp Duty</th>
+                  {propertyType === 'HDB' && <th className="px-3 py-2 text-right font-medium text-gray-700">Agent Fee</th>}
+
+                  <th className="px-3 py-2 text-right font-medium text-gray-700 bg-blue-50/50">Monthly (MI)</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700 bg-blue-50/50">Monthly OA</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700 bg-blue-50/50">Cash Top-up</th>
+                  <th className="px-3 py-2 text-right font-medium text-gray-700 bg-green-50/50">CPF Runway</th>
+
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Upfront Req.</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">{propertyType === 'HDB' && loanType === 'HDB' ? '80%' : '75%'} Loan</th>
                   <th className="px-3 py-2 text-right font-medium text-gray-700">Loan Shortfall</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Add. TDSR</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Pledge</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Show Fund</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Monthly (MI)</th>
-                  <th className="px-3 py-2 text-right font-medium text-gray-700">Rental (3%)</th>
                 </tr>
               </thead>
               <tbody>
@@ -611,27 +706,28 @@ function App() {
                     className={`border-b ${detail.canAfford ? 'bg-green-50' : ''} ${index % 2 === 0 ? '' : 'bg-gray-50/50'}`}
                   >
                     <td className={`px-3 py-2 font-medium sticky left-0 ${detail.canAfford ? 'bg-green-50' : index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>{formatCurrency(detail.price)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.optionFee)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.exerciseFee)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.legal)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.bsd)}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(detail.downpayment)}</td>
+
+                    <td className="px-3 py-2 text-right">{formatCurrency(detail.cashDeposit)}</td>
+                    <td className="px-3 py-2 text-right">{formatCurrency(detail.cpfDeposit)}</td>
+                    <td className="px-3 py-2 text-right">{formatCurrency(detail.bsd + detail.absd)}</td>
+                    {propertyType === 'HDB' && <td className="px-3 py-2 text-right">{formatCurrency(detail.buyerAgentFee)}</td>}
+
+                    <td className="px-3 py-2 text-right bg-blue-50/30 font-medium">{formatCurrency(Math.round(detail.monthlyInstalment))}</td>
+                    <td className="px-3 py-2 text-right bg-blue-50/30">{formatCurrency(Math.round(detail.monthlyOA))}</td>
+                    <td className={`px-3 py-2 text-right bg-blue-50/30 ${detail.cashTopUp > 0 ? 'text-red-600 font-bold' : 'text-gray-400'}`}>
+                      {detail.cashTopUp > 0 ? formatCurrency(Math.round(detail.cashTopUp)) : '-'}
+                    </td>
+                    <td className={`px-3 py-2 text-right bg-green-50/30 ${detail.runwayYears < 30 ? 'text-orange-600' : 'text-green-600'}`}>
+                      {detail.cashTopUp > 0
+                        ? (detail.runwayYears > 50 ? '> 50 years' : `${detail.runwayYears.toFixed(1)} years`)
+                        : '∞'}
+                    </td>
+
                     <td className="px-3 py-2 text-right font-medium">{formatCurrency(detail.upfrontRequired)}</td>
                     <td className="px-3 py-2 text-right">{formatCurrency(detail.loanLTV)}</td>
                     <td className={`px-3 py-2 text-right ${detail.loanShortfall > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
                       {detail.loanShortfall > 0 ? formatCurrency(detail.loanShortfall) : '-'}
                     </td>
-                    <td className={`px-3 py-2 text-right ${detail.additionalTDSR > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
-                      {detail.additionalTDSR > 0 ? formatCurrency(Math.round(detail.additionalTDSR)) : '-'}
-                    </td>
-                    <td className={`px-3 py-2 text-right ${detail.pledge > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
-                      {detail.pledge > 0 ? formatCurrency(Math.round(detail.pledge)) : '-'}
-                    </td>
-                    <td className={`px-3 py-2 text-right ${detail.showFund > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
-                      {detail.showFund > 0 ? formatCurrency(Math.round(detail.showFund)) : '-'}
-                    </td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(Math.round(detail.monthlyInstalment))}</td>
-                    <td className="px-3 py-2 text-right">{formatCurrency(Math.round(detail.rentalYield))}</td>
                   </tr>
                 ))}
               </tbody>
